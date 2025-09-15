@@ -1,0 +1,201 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VyaparAI - Smart Billing System</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            resize: vertical;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .bill {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+        }
+        .error {
+            color: #d9534f;
+            margin-top: 10px;
+        }
+        .success {
+            color: #5cb85c;
+            margin-top: 10px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 10px 0;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>VyaparAI 🚀</h1>
+        <p>Enter your order in natural language (e.g., "2 notebooks, 5 pens for John")</p>
+        
+        <textarea id="orderText" placeholder="e.g., I need 3 notebooks and 5 pens for Sarah..."></textarea>
+        <br>
+        <button onclick="processOrder()">Process Order</button>
+        
+        <div id="result"></div>
+        <div id="inventorySection">
+            <h2>Current Inventory</h2>
+            <div id="inventory"></div>
+        </div>
+    </div>
+
+    <script>
+        // Load inventory on page load
+        document.addEventListener('DOMContentLoaded', loadInventory);
+        
+        function loadInventory() {
+            fetch('/api/inventory')
+                .then(response => response.json())
+                .then(data => {
+                    let inventoryHtml = '<table><tr><th>Product</th><th>Price</th><th>Stock</th></tr>';
+                    data.forEach(item => {
+                        inventoryHtml += `<tr><td>${item.name}</td><td>₹${item.price}</td><td>${item.stock}</td></tr>`;
+                    });
+                    inventoryHtml += '</table>';
+                    document.getElementById('inventory').innerHTML = inventoryHtml;
+                });
+        }
+        
+        function processOrder() {
+            const orderText = document.getElementById('orderText').value;
+            if (!orderText) {
+                alert('Please enter an order');
+                return;
+            }
+            
+            document.getElementById('result').innerHTML = '<p>Processing...</p>';
+            
+            fetch('/api/process-order', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ text: orderText })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('result').innerHTML = `<p class="error">Error: ${data.error}</p>`;
+                } else {
+                    // Display the bill
+                    const bill = data.bill;
+                    let billHtml = `
+                        <div class="bill">
+                            <h2>Bill Generated Successfully!</h2>
+                            <p><strong>Customer:</strong> ${bill.customer}</p>
+                            <p><strong>Date:</strong> ${bill.date}</p>
+                            <table>
+                                <tr>
+                                    <th>Product</th>
+                                    <th>Quantity</th>
+                                    <th>Price</th>
+                                    <th>Subtotal</th>
+                                </tr>
+                    `;
+                    
+                    bill.items.forEach(item => {
+                        billHtml += `
+                            <tr>
+                                <td>${item.name}</td>
+                                <td>${item.quantity}</td>
+                                <td>₹${item.price}</td>
+                                <td>₹${item.subtotal}</td>
+                            </tr>
+                        `;
+                    });
+                    
+                    billHtml += `
+                            <tr>
+                                <td colspan="3" style="text-align: right;"><strong>Total:</strong></td>
+                                <td><strong>₹${bill.total}</strong></td>
+                            </tr>
+                        </table>
+                        <button onclick="downloadBill(${JSON.stringify(bill).replace(/'/g, "\\'")})">Download Bill as CSV</button>
+                    </div>
+                    `;
+                    
+                    document.getElementById('result').innerHTML = billHtml;
+                    
+                    // Reload inventory to reflect changes
+                    loadInventory();
+                }
+            })
+            .catch(error => {
+                document.getElementById('result').innerHTML = `<p class="error">Error: ${error.message}</p>`;
+            });
+        }
+        
+        function downloadBill(bill) {
+            fetch('/api/download-bill', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ bill: bill })
+            })
+            .then(response => response.blob())
+            .then(blob => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = `bill_${bill.customer}_${bill.date.substring(0, 10)}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+            })
+            .catch(error => console.error('Error downloading bill:', error));
+        }
+    </script>
+</body>
+</html>
