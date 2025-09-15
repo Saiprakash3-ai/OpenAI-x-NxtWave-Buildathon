@@ -1,0 +1,191 @@
+# app.py
+from flask import Flask, render_template, request, jsonify, send_file
+import json
+import openai
+import os
+from datetime import datetime
+import csv
+from io import StringIO
+
+app = Flask(__name__)
+
+# Initialize OpenAI API - in production, use environment variables
+openai.api_key = "your-openai-api-key-here"  # Replace with your actual key
+
+# Load inventory
+def load_inventory():
+    try:
+        with open('inventory.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        # Sample initial inventory
+        inventory = [
+            {"id": 1, "name": "Notebook", "price": 25.0, "stock": 100},
+            {"id": 2, "name": "Pen", "price": 10.0, "stock": 200},
+            {"id": 3, "name": "Pencil", "price": 5.0, "stock": 150},
+            {"id": 4, "name": "Eraser", "price": 5.0, "stock": 80},
+            {"id": 5, "name": "Sharpener", "price": 8.0, "stock": 60}
+        ]
+        with open('inventory.json', 'w') as f:
+            json.dump(inventory, f, indent=4)
+        return inventory
+
+# Save inventory
+def save_inventory(inventory):
+    with open('inventory.json', 'w') as f:
+        json.dump(inventory, f, indent=4)
+
+# Process natural language input using OpenAI
+def process_order_text(text):
+    inventory = load_inventory()
+    
+    # Create a prompt for OpenAI
+    prompt = f"""
+    Convert the following customer order into JSON format with product names, quantities, and prices.
+    Available products: {json.dumps(inventory)}
+    
+    Order: "{text}"
+    
+    Return only valid JSON in this format: 
+    {{
+        "items": [
+            {{"name": "product name", "quantity": number, "price": number}}
+        ],
+        "customer": "Customer Name"  # Extract if mentioned, otherwise use "Walk-in Customer"
+    }}
+    """
+    
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that converts natural language orders into structured JSON for billing."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=500,
+            temperature=0.1
+        )
+        
+        # Parse the response
+        result = response.choices[0].message.content.strip()
+        # Sometimes the response might include code blocks, so we need to extract JSON
+        if result.startswith('```json'):
+            result = result[7:-3]  # Remove ```json and ``` markers
+        elif result.startswith('```'):
+            result = result[3:-3]  # Remove ``` markers
+        
+        order_data = json.loads(result)
+        return order_data
+    except Exception as e:
+        print(f"Error processing order: {e}")
+        return None
+
+# Generate bill and update inventory
+def generate_bill(order_data):
+    inventory = load_inventory()
+    bill_items = []
+    total = 0
+    
+    for item in order_data['items']:
+        # Find the product in inventory
+        product = next((p for p in inventory if p['name'].lower() == item['name'].lower()), None)
+        
+        if product:
+            # Update inventory
+            if product['stock'] >= item['quantity']:
+                product['stock'] -= item['quantity']
+                subtotal = item['quantity'] * item['price']
+                total += subtotal
+                
+                bill_items.append({
+                    'name': product['name'],
+                    'quantity': item['quantity'],
+                    'price': item['price'],
+                    'subtotal': subtotal
+                })
+            else:
+                # Handle insufficient stock
+                return None, f"Insufficient stock for {product['name']}"
+        else:
+            return None, f"Product not found: {item['name']}"
+    
+    # Save updated inventory
+    save_inventory(inventory)
+    
+    # Generate bill
+    bill = {
+        'customer': order_data.get('customer', 'Walk-in Customer'),
+        'date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        'items': bill_items,
+        'total': total
+    }
+    
+    return bill, None
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/process-order', methods=['POST'])
+def process_order():
+    data = request.json
+    order_text = data.get('text', '')
+    
+    if not order_text:
+        return jsonify({'error': 'No order text provided'}), 400
+    
+    # Process the order text
+    order_data = process_order_text(order_text)
+    if not order_data:
+        return jsonify({'error': 'Failed to process order'}), 500
+    
+    # Generate bill and update inventory
+    bill, error = generate_bill(order_data)
+    if error:
+        return jsonify({'error': error}), 400
+    
+    return jsonify({'bill': bill, 'order_data': order_data})
+
+@app.route('/api/inventory')
+def get_inventory():
+    inventory = load_inventory()
+    return jsonify(inventory)
+
+@app.route('/api/download-bill', methods=['POST'])
+def download_bill():
+    bill_data = request.json.get('bill')
+    
+    if not bill_data:
+        return jsonify({'error': 'No bill data provided'}), 400
+    
+    # Create CSV file
+    si = StringIO()
+    cw = csv.writer(si)
+    
+    # Header
+    cw.writerow(['VyaparAI - Smart Billing System'])
+    cw.writerow([])
+    cw.writerow(['Customer:', bill_data['customer']])
+    cw.writerow(['Date:', bill_data['date']])
+    cw.writerow([])
+    cw.writerow(['Product', 'Quantity', 'Price', 'Subtotal'])
+    
+    # Items
+    for item in bill_data['items']:
+        cw.writerow([item['name'], item['quantity'], item['price'], item['subtotal']])
+    
+    # Total
+    cw.writerow([])
+    cw.writerow(['Total:', '', '', bill_data['total']])
+    
+    output = si.getvalue()
+    
+    return send_file(
+        StringIO(output),
+        as_attachment=True,
+        download_name=f"bill_{bill_data['customer']}_{bill_data['date'][:10]}.csv",
+        mimetype='text/csv'
+    )
+
+if __name__ == '__main__':
+    app.run(debug=True)
